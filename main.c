@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include "config.h"
 #include "log.h"
-
+#include "omp.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -34,7 +34,6 @@ typedef struct image_mat_structure
     channel cn;
 
 } *image_mat;
-
 
 
 //NOTE ============== Методы работы с изображениями ==============  
@@ -77,63 +76,123 @@ void free_image(image_mat image)
     free(image);
 }
 
+#define INV_DOUBLE_SQRT2 0.3535533906f
+#define SQRT2_DIV_DOUBLE_SQRT2 0.5f
 
-int vertical_kernel[9] = 
-{
-        -1, -1, -1,
-         0,  0,  0,
-         1,  1,  1
+static const float kernels[9][9] = {
+    {
+        0.3333333333f, 0.3333333333f, 0.3333333333f,
+        0.3333333333f, 0.3333333333f, 0.3333333333f,
+        0.3333333333f, 0.3333333333f, 0.3333333333f
+    },
+
+    {
+         INV_DOUBLE_SQRT2,  SQRT2_DIV_DOUBLE_SQRT2,  INV_DOUBLE_SQRT2,
+         0,                 0,                       0,
+        -INV_DOUBLE_SQRT2, -SQRT2_DIV_DOUBLE_SQRT2, -INV_DOUBLE_SQRT2
+    },
+
+    {
+         INV_DOUBLE_SQRT2, 0, -INV_DOUBLE_SQRT2,
+         SQRT2_DIV_DOUBLE_SQRT2, 0, -SQRT2_DIV_DOUBLE_SQRT2,
+         INV_DOUBLE_SQRT2, 0, -INV_DOUBLE_SQRT2
+    },
+
+    {
+         INV_DOUBLE_SQRT2, -SQRT2_DIV_DOUBLE_SQRT2, INV_DOUBLE_SQRT2,
+         0,                 0,                       0,
+        -INV_DOUBLE_SQRT2,  SQRT2_DIV_DOUBLE_SQRT2, -INV_DOUBLE_SQRT2
+    },
+
+    {
+         INV_DOUBLE_SQRT2, 0, -INV_DOUBLE_SQRT2,
+        -SQRT2_DIV_DOUBLE_SQRT2, 0, SQRT2_DIV_DOUBLE_SQRT2,
+         INV_DOUBLE_SQRT2, 0, -INV_DOUBLE_SQRT2
+    },
+
+    {
+         0.3333333333f, -0.6666666667f, 0.3333333333f,
+         0.3333333333f, -0.6666666667f, 0.3333333333f,
+         0.3333333333f, -0.6666666667f, 0.3333333333f
+    },
+
+    {
+         0.3333333333f,  0.3333333333f,  0.3333333333f,
+        -0.6666666667f, -0.6666666667f, -0.6666666667f,
+         0.3333333333f,  0.3333333333f,  0.3333333333f
+    },
+
+    {
+        -0.6666666667f, 0.3333333333f, 0.3333333333f,
+         0.3333333333f, -0.6666666667f, 0.3333333333f,
+         0.3333333333f, 0.3333333333f, -0.6666666667f
+    },
+
+    {
+         0.3333333333f,  0.3333333333f, -0.6666666667f,
+         0.3333333333f, -0.6666666667f,  0.3333333333f,
+        -0.6666666667f,  0.3333333333f,  0.3333333333f
+    }
 };
 
-int horizontal_kernel[9] = 
-{
-        -1, 0, 1,
-        -1, 0, 1,
-        -1, 0, 1
-};
+
 
 void operator_frei_chen(image_mat image_src, image_mat image_dst)
 {
     int width = image_src->width;
     int height = image_src->height;
 
-    for (int x = 0; x < width; x++)
-    {
-        for (int y = 0; y < height; y++)
-        {
+    float gx, gy, angle, magnitude;
 
-            int Gy = 0, Gx = 0;
+    
+    for (int x = 0; x < width - 2; x++)
+    {
+        for (int y = 0; y < height -2; y++)
+        {
+            float sum[9] = {0.0f};
+            float total_energy = 0.0f;
+
             for (int i = 0; i < 3; i++)
             {
                 for (int j = 0; j < 3; j++)
                 {
-                    int kv = vertical_kernel[i * 3 + j];
-                    int kh = horizontal_kernel[i * 3 + j];
+                    float pixel = (float)image_src->data[(y + i) * width + (x + j)];
+                    total_energy += pixel * pixel;
+                }
+            }
 
-                    if (kv < 0)
+            for (int k = 0; k < 9; k++)
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    for (int j = 0; j < 3; j++)
                     {
-                        Gy += -(image_src->data[(y + i) * width + (x + j)] >> kv);
-                    }
-                    else
-                    {
-                        Gy += image_src->data[(y + i) * width + (x + j)] >> kv;
-                    }
-
-                    if (kh < 0)
-                    {
-                        Gx += -(image_src->data[(y + i) * width + (x + j)] >> kh);
-                    }
-                    else
-                    {
-                        Gx += image_src->data[(y + i) * width + (x + j)] >> kh;
+                        float pixel = (float)image_src->data[(y + i) * width + (x + j)];
+                        sum[k] += pixel * kernels[k][i * 3 + j];                   
                     }
                 }
             }
 
-           image_dst->data[y * width + x] = (uint8_t)sqrt(Gx * Gx + Gy * Gy);
+            float energy_edge = sum[1] * sum[1] + sum[2] * sum[2] + sum[3] * sum[3] + sum[4] * sum[4];
+
+            float result = 0.0f;
+            
+            if (total_energy > 0.0f) result = energy_edge / total_energy;
+            
+            image_dst->data[y * width + x] = (uint8_t)(result * 255.0f);
+
+            // Вычисляем average magnitude of the gradient
+            gx = sum[1];
+            gy = sum[2];
+
+            magnitude = sqrtf(gx * gx + gy * gy);
+            angle = atan2f(gy, gx);
         }
     }
 }
+
+
+
 
 int main(void)
 {
@@ -158,8 +217,8 @@ int main(void)
 
     clock_t start = clock();
 
-    image_mat sobel = new_image(image_src->width, image_src->height, 1);
-    operator_frei_chen(image_src, sobel);
+    image_mat grad_frei_chen = new_image(image_src->width, image_src->height, 1);
+    operator_frei_chen(image_src, grad_frei_chen);
 
     clock_t end = clock();
     double cpu_time_used = ((double) end - start) / CLOCKS_PER_SEC;
@@ -167,7 +226,7 @@ int main(void)
 
     // Сохранение резульата
     if (stbi_write_png(save_path,
-        sobel->width, sobel->height, sobel->cn, sobel->data, sobel->width * sobel->cn)) 
+        grad_frei_chen->width, grad_frei_chen->height, grad_frei_chen->cn, grad_frei_chen->data, grad_frei_chen->width * grad_frei_chen->cn)) 
     {
         printf("Successfully");
     }
@@ -182,7 +241,7 @@ int main(void)
 
 
     free_image(image_src);
-    free_image(sobel);
+    free_image(grad_frei_chen);
     return 0;
 }
 
