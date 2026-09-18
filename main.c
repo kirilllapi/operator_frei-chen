@@ -136,18 +136,108 @@ static const float kernels[9][9] = {
 };
 
 
-
-void operator_frei_chen(image_mat image_src, image_mat image_dst)
+static void draw_line(image_mat image_map, int x0, int y0, int x1, int y1)
 {
-    int width = image_src->width;
-    int height = image_src->height;
+    int dx = abs(x1 - x0);
+    int dy = abs(y1 - y0);
 
-    float gx, gy, angle, magnitude;
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+
+    int error = dx - dy;
+
+    int width = (int)image_map->width;
+    int height = (int)image_map->height;
+
+    for (;;)
+    {
+        if (x0 >= 0 && x0 < width &&
+            y0 >= 0 && y0 < height)
+        {
+            image_map->data[y0 * width + x0] = 255;
+        }
+
+        if (x0 == x1 && y0 == y1)
+            break;
+
+        int e2 = 2 * error;
+
+        if (e2 > -dy)
+        {
+            error -= dy;
+            x0 += sx;
+        }
+
+        if (e2 < dx)
+        {
+            error += dx;
+            y0 += sy;
+        }
+    }
+}
+
+
+void draw_arrow(image_mat image_map, int x0, int y0, int x1, int y1)
+{
+    /* Основная линия */
+    draw_line(image_map, x0, y0, x1, y1);
+
+    /* Направление линии */
+    float angle = atan2f((float)(y1 - y0), (float)(x1 - x0));
+
+    int arrow_length = 5;
+    float arrow_angle = 0.7f;
+
+    /* Левая часть наконечника */
+    int ax1 = x1 - (int)(cosf(angle + arrow_angle) * arrow_length);
+
+    int ay1 = y1 - (int)(sinf(angle + arrow_angle) * arrow_length);
+
+    /* Правая часть наконечника */
+    int ax2 = x1 - (int)(cosf(angle - arrow_angle) * arrow_length);
+
+    int ay2 = y1 - (int)(sinf(angle - arrow_angle) * arrow_length);
+
+    draw_line(image_map, x1, y1, ax1, ay1);
+    draw_line(image_map, x1, y1, ax2, ay2);
+}
+
+
+void create_map_direction(image_mat image_map, double* angle_frei_chen)
+{   
+    unsigned int width = image_map->width;
+    unsigned int height = image_map->height;
+
+    int length = 7;
+    int step = 13; 
+
+    printf("Length: %d", length);
+    
+    for (unsigned int x = 0; x < width - 2; x+=step)
+    {
+        for (unsigned int y = 0; y < height - 2; y+=step)
+        {
+            int x2 = (int)x + (int)(cosf(angle_frei_chen[y * width + x]) * length);
+            int y2 = (int)y + (int)(sinf(angle_frei_chen[y * width + x]) * length);
+            
+            draw_arrow(image_map, x, y, x2, y2);
+        }
+    }
+}
+
+
+
+void operator_frei_chen(image_mat image_src, image_mat image_dst, double* angle_frei_chen)
+{
+    unsigned int width = image_src->width;
+    unsigned int height = image_src->height;
+
+    float gx, gy, magnitude;
 
     
-    for (int x = 0; x < width - 2; x++)
+    for (unsigned int x = 0; x < width - 2; x++)
     {
-        for (int y = 0; y < height -2; y++)
+        for (unsigned int y = 0; y < height -2; y++)
         {
             float sum[9] = {0.0f};
             float total_energy = 0.0f;
@@ -182,15 +272,14 @@ void operator_frei_chen(image_mat image_src, image_mat image_dst)
             image_dst->data[y * width + x] = (uint8_t)(result * 255.0f);
 
             // Вычисляем average magnitude of the gradient
-            gx = sum[1];
-            gy = sum[2];
+            gx = sum[1]; gy = sum[2];
 
             magnitude = sqrtf(gx * gx + gy * gy);
-            angle = atan2f(gy, gx);
+
+            angle_frei_chen[y * width + x] = atan2f(gy, gx);
         }
     }
 }
-
 
 
 
@@ -200,7 +289,7 @@ int main(void)
     // Загрузка изображения и получение его параметров
     int width, height, channels;
     char img_path[256], save_path[256];
-    sprintf(img_path, ".\\resources\\result\\output_5.png");
+    sprintf(img_path, ".\\resources\\result\\output_4.png");
     sprintf(save_path, ".\\resources\\result\\output_1_labeled.png");
 
     unsigned char *data = stbi_load(img_path, &width, &height, &channels, 0);
@@ -215,10 +304,15 @@ int main(void)
     memcpy(image_src->data, data, width * height * channels);
     stbi_image_free(data);
 
+    double* angle_frei_chen = (double*)malloc(width * height * sizeof(double));
+    
     clock_t start = clock();
 
-    image_mat grad_frei_chen = new_image(image_src->width, image_src->height, 1);
-    operator_frei_chen(image_src, grad_frei_chen);
+    image_mat grad_frei_chen = new_image(image_src->width, image_src->height, cn_grayscale);
+    image_mat direction_map = new_image(image_src->width, image_src->height, cn_grayscale);
+    
+    operator_frei_chen(image_src, grad_frei_chen, angle_frei_chen);
+    create_map_direction(direction_map, angle_frei_chen);
 
     clock_t end = clock();
     double cpu_time_used = ((double) end - start) / CLOCKS_PER_SEC;
@@ -226,7 +320,7 @@ int main(void)
 
     // Сохранение резульата
     if (stbi_write_png(save_path,
-        grad_frei_chen->width, grad_frei_chen->height, grad_frei_chen->cn, grad_frei_chen->data, grad_frei_chen->width * grad_frei_chen->cn)) 
+        direction_map->width, direction_map->height, direction_map->cn, direction_map->data, direction_map->width * direction_map->cn)) 
     {
         printf("Successfully");
     }
@@ -239,9 +333,11 @@ int main(void)
         return 1;
     }
 
-
     free_image(image_src);
     free_image(grad_frei_chen);
+    free_image(direction_map);
+    free(angle_frei_chen);
+
     return 0;
 }
 
