@@ -79,7 +79,7 @@ void free_image(image_mat image)
 #define INV_DOUBLE_SQRT2 0.3535533906f
 #define SQRT2_DIV_DOUBLE_SQRT2 0.5f
 
-static const float kernels[9][9] = {
+static const float v[9][9] = {
     {
         0.3333333333f, 0.3333333333f, 0.3333333333f,
         0.3333333333f, 0.3333333333f, 0.3333333333f,
@@ -258,7 +258,7 @@ void operator_frei_chen(image_mat image_src, image_mat image_dst, double* angle_
                     for (int j = 0; j < 3; j++)
                     {
                         float pixel = (float)image_src->data[(y + i) * width + (x + j)];
-                        sum[k] += pixel * kernels[k][i * 3 + j];                   
+                        sum[k] += pixel * v[k][i * 3 + j];                   
                     }
                 }
             }
