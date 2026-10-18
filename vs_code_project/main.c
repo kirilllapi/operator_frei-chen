@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include "config.h"
 #include "log.h"
-#include "omp.h"
+#include <omp.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -76,74 +76,76 @@ void free_image(image_mat image)
     free(image);
 }
 
-#define INV_DOUBLE_SQRT2 0.3535533906f
-#define SQRT2_DIV_DOUBLE_SQRT2 0.5f
+
 #define SQRT2 1.4142135624f
+#define K_G   0.35355339f   // 1/(2*SQRT2)  W1..W4
+#define K_L   0.5f          // 1/2          W5, W6
+#define K_LP  0.16666667f   // 1/6          W7, W8
+#define K_AVG 0.33333333f   // 1/3          W9
 
 static const float v[9][9] = {
 
     // W1 - ISOTROPIC AVERAGE GRADIENT
     {
-        1.0f, SQRT2, 1.0f,
-        0.0f, 0.0f,  0.0f,
-       -1.0f, -SQRT2,-1.0f
+         K_G * 1.0f,  K_G * SQRT2,  K_G * 1.0f,
+         K_G * 0.0f,  K_G * 0.0f,   K_G * 0.0f,
+        -K_G * 1.0f, -K_G * SQRT2, -K_G * 1.0f
     },
 
     // W2 - ISOTROPIC AVERAGE GRADIENT
     {
-        1.0f, 0.0f, -1.0f,
-        SQRT2, 0.0f, -SQRT2,
-        1.0f, 0.0f, -1.0f
+        K_G * 1.0f,    K_G * 0.0f, -K_G * 1.0f,
+        K_G * SQRT2,   K_G * 0.0f, -K_G * SQRT2,
+        K_G * 1.0f,    K_G * 0.0f, -K_G * 1.0f
     },
 
     // W3 - Ripple operator
     {
-        0.0f,  -1.0f,   SQRT2,
-        1.0f,   0.0f,   -1.0f,
-       -SQRT2,  1.0f,   0.0f
+         K_G * 0.0f,   -K_G * 1.0f,  K_G * SQRT2,
+         K_G * 1.0f,    K_G * 0.0f, -K_G * 1.0f,
+        -K_G * SQRT2,   K_G * 1.0f,  K_G * 0.0f
     },
 
     // W4 - Ripple operator
     {
-        SQRT2,  -1.0f,   0.0f,
-        -1.0f,   0.0f,   1.0f,
-        0.0f,   1.0f,   -SQRT2
+         K_G * SQRT2,  -K_G * 1.0f,  K_G * 0.0f,
+        -K_G * 1.0f,    K_G * 0.0f,  K_G * 1.0f,
+         K_G * 0.0f,    K_G * 1.0f, -K_G * SQRT2
     },
 
     // W5 - Line
     {
-        0.0f,   1.0f,   0.0f,
-       -1.0f,   0.0f,  -1.0f,
-        0.0f,   1.0f,   0.0f
+         K_L * 0.0f,  K_L * 1.0f,  K_L * 0.0f,
+        -K_L * 1.0f,  K_L * 0.0f, -K_L * 1.0f,
+         K_L * 0.0f,  K_L * 1.0f,  K_L * 0.0f
     },
 
     // W6 - Line
     {
-       -1.0f,   0.0f,   1.0f,
-        0.0f,   0.0f,   0.0f,
-        1.0f,   0.0f,  -1.0f
+        -K_L * 1.0f,  K_L * 0.0f,  K_L * 1.0f,
+         K_L * 0.0f,  K_L * 0.0f,  K_L * 0.0f,
+         K_L * 1.0f,  K_L * 0.0f, -K_L * 1.0f
     },
-
 
     // W7 - Discrete Laplacian
     {
-        1.0f,  -2.0f,   1.0f,
-       -2.0f,   4.0f,  -2.0f,
-        1.0f,  -2.0f,   1.0f
+         K_LP * 1.0f, -K_LP * 2.0f,  K_LP * 1.0f,
+        -K_LP * 2.0f,  K_LP * 4.0f, -K_LP * 2.0f,
+         K_LP * 1.0f, -K_LP * 2.0f,  K_LP * 1.0f
     },
 
     // W8 - Discrete Laplacian
     {
-       -2.0f,   1.0f,  -2.0f,
-        1.0f,   4.0f,   1.0f,
-       -2.0f,   1.0f,  -2.0f
+        -K_LP * 2.0f,  K_LP * 1.0f, -K_LP * 2.0f,
+         K_LP * 1.0f,  K_LP * 4.0f,  K_LP * 1.0f,
+        -K_LP * 2.0f,  K_LP * 1.0f, -K_LP * 2.0f
     },
 
     // W9 - Average
     {
-        1.0f,   1.0f,   1.0f,
-        1.0f,   1.0f,   1.0f,
-        1.0f,   1.0f,   1.0f
+        K_AVG * 1.0f, K_AVG * 1.0f, K_AVG * 1.0f,
+        K_AVG * 1.0f, K_AVG * 1.0f, K_AVG * 1.0f,
+        K_AVG * 1.0f, K_AVG * 1.0f, K_AVG * 1.0f
     }
 };
 
@@ -241,85 +243,63 @@ void create_map_direction(image_mat image_map, double* angle_frei_chen)
 }
 
 
+#define MIN_ENERGY 800.0f
 
 void operator_frei_chen(image_mat image_src, image_mat image_dst_edge, image_mat image_dst_line, double* angle_frei_chen)
 {
-    unsigned int width = image_src->width;
+    unsigned int width  = image_src->width;
     unsigned int height = image_src->height;
 
-    float gy, gx, magnitude_edge, magnitude_line;
-
-    
-    for (unsigned int x = 0; x < width - 2; x++)
+    for (unsigned int y = 0; y < height - 2; y++)
     {
-        for (unsigned int y = 0; y < height -2; y++)
+        for (unsigned int x = 0; x < width - 2; x++)
         {
-            // 8 фильтров Фрей-Чена
-            float sum_vi_mul_b[8] = {0.0f};
+            float s[9] = {0.0f};
+            float b[9];
             float total_energy = 0.0f;
 
-            // Расчет полной энергии пикселей в окне 3x3
+            // окно 3x3 читаем один раз
             for (int i = 0; i < 3; i++)
             {
                 for (int j = 0; j < 3; j++)
                 {
-                    float b = (float)image_src->data[(y + i) * width + (x + j)];
-                    total_energy += b * b;
+                    float p = (float)image_src->data[(y + i) * width + (x + j)];
+                    b[i * 3 + j] = p;
+                    total_energy += p * p;
                 }
             }
 
-            // Выполнение свертки с фильтрами Фрей-Чена
-            for (int k = 0; k < 8; k++)
+            // свертка с 9 масками (нормировка уже в масках)
+            for (int k = 0; k < 9; k++)
             {
-                for (int i = 0; i < 3; i++)
+                for (int n = 0; n < 9; n++)
                 {
-                    for (int j = 0; j < 3; j++)
-                    {
-                        float b = (float)image_src->data[(y + i) * width + (x + j)];
-                        sum_vi_mul_b[k] += v[k][i * 3 + j] * b;                   
-                    }
+                    s[k] += v[k][n] * b[n];
                 }
             }
 
-            float threshold = 0.3f;
-            // Расчет энергии и статистики для границ
-            float energy_edge = sum_vi_mul_b[0] * sum_vi_mul_b[0] + sum_vi_mul_b[1] * sum_vi_mul_b[1] + sum_vi_mul_b[2] * sum_vi_mul_b[2] + sum_vi_mul_b[3] * sum_vi_mul_b[3];
+            float energy_edge = s[0]*s[0] + s[1]*s[1] + s[2]*s[2] + s[3]*s[3];
+            float energy_line = s[4]*s[4] + s[5]*s[5] + s[6]*s[6] + s[7]*s[7];
 
-            // Расчет энергии и статистики для линий
-            float energy_line = sum_vi_mul_b[4] * sum_vi_mul_b[4] + sum_vi_mul_b[5] * sum_vi_mul_b[5] + sum_vi_mul_b[6] * sum_vi_mul_b[6] + sum_vi_mul_b[7] * sum_vi_mul_b[7];
-            
-            float max_energy = 255 * 255 * 9;
-            float min_energy_threshold = max_energy / 500.0f; 
-
-            float angle = atan2f(gy, gx);
-            if (total_energy > min_energy_threshold && angle > M_PI_2)
+            float stat_edge = 0.0f, stat_line = 0.0f;
+            if (total_energy > MIN_ENERGY)
             {
-                // Считаем контуры
-                float stat_edge = energy_edge / total_energy;       
-                if (stat_edge > 1.0f) stat_edge = 1.0f;
-                if (stat_edge < threshold) stat_edge = 0.0f;
-                image_dst_edge->data[(y + 1) * width + (x + 1)] = (uint8_t)(stat_edge * 255.0f);
-                magnitude_edge = sqrtf(energy_edge);
-
-                // Считаем линии
-                float stat_line = energy_line / total_energy;
-                if (stat_line > 1.0f) stat_line = 1.0f;
-                if (stat_line < threshold) stat_line = 0.0f;
-                image_dst_line->data[(y + 1) * width + (x + 1)] = (uint8_t)(stat_line * 255.0f);
-                magnitude_line = sqrtf(energy_line);
+                stat_edge = energy_edge / total_energy;
+                stat_line = energy_line / total_energy;
             }
-            else
-            {
-                // Если энергии не хватает — это гарантированно темнота или плоский фон
-                image_dst_edge->data[(y + 1) * width + (x + 1)] = 0;
-                image_dst_line->data[(y + 1) * width + (x + 1)] = 0;
-            }
+           
+            if (stat_edge > 1.0f) stat_edge = 1.0f;
+            if (stat_line > 1.0f) stat_line = 1.0f;
+            if (stat_edge < 0.12f) stat_edge = 0.0f;
+            if (stat_line < 0.12f) stat_line = 0.0f;
 
 
-            // Расчет угла градиента
-            gy = sum_vi_mul_b[0];
-            gx = sum_vi_mul_b[1];
-            
+            image_dst_edge->data[(y + 1) * width + (x + 1)] = (uint8_t)(stat_edge * 255.0f);
+            image_dst_line->data[(y + 1) * width + (x + 1)] = (uint8_t)(stat_line * 255.0f);
+
+            // градиент (y вверх, как в create_map_direction)
+            float gx = -s[1];
+            float gy =  s[0];
             angle_frei_chen[(y + 1) * width + (x + 1)] = atan2f(gy, gx);
         }
     }
@@ -378,7 +358,6 @@ int main(void)
 
             return 1;
         }
-
 
         free_image(image_src);
         free_image(edge_frei_chen);
